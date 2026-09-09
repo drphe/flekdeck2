@@ -14,7 +14,6 @@ struct LCTabView: View {
     @State var crashReportShow = false
     @State var errorInfo = ""
     @State private var isiOSBeta = false
-    @State private var udid: String = ""
 
     @AppStorage("LCBetaBannerOverride", store: LCUtils.appGroupUserDefault) private var betaBannerOverride: Int = 0
     
@@ -33,7 +32,6 @@ struct LCTabView: View {
     @EnvironmentObject var sceneDelegate: SceneDelegate
     @State var shouldToggleMainWindowOpen = false
     @Environment(\.scenePhase) var scenePhase
-
     
     @StateObject var searchContextAppList = SearchContext()
     @StateObject var searchContextSource = SearchContext()
@@ -57,9 +55,6 @@ struct LCTabView: View {
             } else if isBlocked {
                 AccessBlockedView(reason: blockedReason, message: blockedMessage)
             } else {
-                // FlekDeck: the springboard home screen replaces the old tab bar.
-                // Settings and the Installer are now opened as full-screen pages from
-                // the home screen instead of being separate tabs.
                 LCAppListView(searchContext: searchContextAppList)
             }
         }
@@ -117,24 +112,20 @@ struct LCTabView: View {
             updateBetaOverlay()
         }
         .onChange(of: scenePhase) { newPhase in
-            // `.task` fires once per process, so without this an app the user
-            // never swipes away would be checked exactly once and never again:
-            // a ban issued afterwards would not land until iOS happened to
-            // terminate it. The 24h freshness test inside keeps this to at most
-            // one request per day — every other foreground is served by cache
-            // and makes no network call at all.
-            guard newPhase == .active else {
-                return
-            }
-            Task {
-                await verifyAccess()
-            }
+            handleScenePhaseChange(to: newPhase)
         }
         .onOpenURL { url in
             dispatchURL(url: url)
         }
         .onChange(of: sharedModel.pendingOpenURL) { _ in
             processPendingURLIfNeeded()
+        }
+    }
+    
+    private func handleScenePhaseChange(to newPhase: ScenePhase) {
+        guard newPhase == .active else { return }
+        Task {
+            await verifyAccess()
         }
     }
     
@@ -173,10 +164,6 @@ struct LCTabView: View {
         sharedModel.deepLink = url
     }
 
-    /// Takes whatever URL is waiting, if this window is in a state to act on it.
-    /// Every window runs this, and the first one through clears the URL, so a
-    /// window that is about to be closed as a duplicate can park a document and
-    /// have the window that stays open install it.
     func processPendingURLIfNeeded() {
         guard hasCheckedBlockedStatus, !isBlocked, !didFailBlockedStatusCheck,
               let url = sharedModel.pendingOpenURL else {
@@ -211,7 +198,6 @@ struct LCTabView: View {
     }
     
     func copyError() { UIPasteboard.general.string = errorInfo }
-    
     
     func checkTeamId() {
         if let certificateTeamId = UserDefaults.standard.string(forKey: "LCCertificateTeamId") {
@@ -279,7 +265,6 @@ struct LCTabView: View {
         
         if(bundleId != correctBundleId) {
             errorInfo = "lc.settings.bundleIdMismatch %@ %@".localizeWithFormat(bundleId, correctBundleId)
-            //errorShow = true
         }
         UserDefaults.standard.set(true, forKey: "LCBundleIdChecked")
     }
@@ -331,14 +316,8 @@ struct LCTabView: View {
             UserDefaults.standard.set(data, forKey: "savedRepositories")
         }
         UserDefaults.standard.set(true, forKey: didSetupKey)
-        
     }
-    /// Single entry point for the access gate.
-    ///
-    /// The re-entrancy guard matters because the launch check and the first
-    /// `.inactive` -> `.active` transition both land at cold start, and without
-    /// it they would run two overlapping checks. Setting the flag before the
-    /// first `await` is what makes the guard reliable.
+
     @MainActor
     private func verifyAccess(forceNetworkCheck: Bool = false) async {
         guard !isVerifyingAccess else {
@@ -371,9 +350,6 @@ struct LCTabView: View {
 
         let cached = AccessVerdictStore.load(for: resolvedEncryptedUDID)
 
-        // A ban is sticky: it applies with no network at all, so switching the
-        // device offline is not a way around it. The background refresh below is
-        // what lets a lifted ban clear.
         if let cached, cached.isBanned {
             await MainActor.run {
                 applyBan(reason: cached.banReason, message: cached.banMessage)
@@ -382,10 +358,6 @@ struct LCTabView: View {
             return
         }
 
-        // A clean verdict opens the app immediately. Inside the refresh interval
-        // the server is not contacted at all; past it we re-check, but in the
-        // background, so a plane or a dead zone never keeps a user out of apps
-        // they have already installed.
         if let cached, !forceNetworkCheck, cached.isWithinGraceWindow() {
             await MainActor.run {
                 applyAccessGranted()
@@ -396,8 +368,6 @@ struct LCTabView: View {
             return
         }
 
-        // No usable verdict: a first launch, a new device, or a verdict older
-        // than the grace window. Nothing opens until the server answers.
         switch await AccessVerificationService.fetchStatus(encryptedUDID: resolvedEncryptedUDID) {
         case .answered(let response):
             AccessVerdictStore.save(response, for: resolvedEncryptedUDID)
@@ -419,9 +389,6 @@ struct LCTabView: View {
         }
     }
 
-    /// Re-checks the verdict without blocking the UI. Access has already been
-    /// decided by this point, so a failed check changes nothing — only a
-    /// definite answer from the server does.
     private func refreshVerdictInBackground(for encryptedUDID: String) {
         Task {
             guard case .answered(let response) = await AccessVerificationService.fetchStatus(
@@ -466,9 +433,6 @@ struct LCTabView: View {
         hasCheckedBlockedStatus = true
     }
 
-    /// One-time startup work that must not run until access is settled. It is
-    /// idempotent because a lifted ban can open the app after the initial pass
-    /// has already returned.
     @MainActor
     private func runPostGateStartupIfNeeded() {
         guard hasCheckedBlockedStatus, !isBlocked, !didFailBlockedStatusCheck, !didRunPostGateStartup else {
@@ -519,7 +483,6 @@ struct LCTabView: View {
     }
 
     func checkiOSBeta() {
-        // Beta iOS builds have a build version ending with a lowercase letter (e.g. 22A5307f)
         if let buildVersion = UIDevice.current.buildVersion,
            let lastChar = buildVersion.last,
            lastChar.isLowercase {
@@ -561,8 +524,10 @@ struct LCTabView: View {
         LCUtils.appGroupUserDefault.set(bookmark, forKey: "LCLaunchExtensionPrivateDocBookmark")
     }
 }
+
 private struct AccessVerificationFailedView: View {
     let message: String
+    @Binding var udid: String
     let onRetry: () -> Void
 
     var body: some View {
@@ -610,29 +575,12 @@ private struct AccessVerificationFailedView: View {
     }
 }
 
-/// Requires a double-swipe to trigger the bottom system edge gesture
-/// (swipe-up-to-home), preventing accidental exits.
-///
-/// The home indicator is intentionally left VISIBLE. iOS treats hiding the
-/// indicator and deferring the home gesture as mutually exclusive: the deferral
-/// works by revealing the indicator on the first swipe and only performing the
-/// gesture on the second, so if the indicator is already hidden a single swipe
-/// exits and the deferral has no effect. Showing the indicator is therefore a
-/// hard requirement for the two-swipe behaviour — do not re-add
-/// `.persistentSystemOverlays(.hidden)` here.
 private struct DeferBottomHomeGestureModifier: ViewModifier {
-    // Erased to AnyView: `defersSystemGestures` is iOS 16+, and an opaque return
-    // type would bake its modifier type into Body. The runtime resolves Body
-    // before the availability check ever runs, so iOS 15 would trap here.
     func body(content: Content) -> AnyView {
         if #available(iOS 16.0, *) {
             return AnyView(
                 content
                     .defersSystemGestures(on: .bottom)
-                    // SwiftUI's `.defersSystemGestures(on:)` frequently fails to
-                    // propagate `preferredScreenEdgesDeferringSystemGestures` to the
-                    // window's view controllers, so also install it directly on the
-                    // hosting controller at runtime as a reliable backstop.
                     .background(BottomEdgeGestureDeferralInstaller())
             )
         }
@@ -640,16 +588,6 @@ private struct DeferBottomHomeGestureModifier: ViewModifier {
     }
 }
 
-/// Zero-size helper that, once attached to a window, forces iOS to defer the
-/// bottom screen-edge system gesture (swipe-up-to-home) by installing
-/// `preferredScreenEdgesDeferringSystemGestures` directly on SwiftUI's
-/// UIHostingController base class. This is the reliable path when the SwiftUI
-/// `.defersSystemGestures` modifier is ignored.
-///
-/// Caveat: this preference is advisory. iOS still overrides it whenever it
-/// decides the user clearly intends to go home, so a firm, deliberate swipe may
-/// still leave in a single gesture on some devices / iOS versions — Apple
-/// intentionally protects the home gesture and this cannot be fully defeated.
 private struct BottomEdgeGestureDeferralInstaller: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = InstallerView()
@@ -668,10 +606,7 @@ private struct BottomEdgeGestureDeferralInstaller: UIViewRepresentable {
     }
 }
 
-/// Runtime swizzler that makes every SwiftUI `UIHostingController` report the
-/// bottom edge as deferring system gestures.
 private enum ScreenEdgeGestureDeferrer {
-    /// Hosting classes already swizzled, so repeated installs are no-ops.
     private static var swizzledClasses = Set<ObjectIdentifier>()
 
     static func install(fromRoot root: UIViewController) {
@@ -680,10 +615,6 @@ private enum ScreenEdgeGestureDeferrer {
         refresh(from: root)
     }
 
-    /// Walks up the class hierarchy of `vc` and returns the highest-level class
-    /// whose name identifies it as a SwiftUI `UIHostingController` — the base
-    /// that every specialised `UIHostingController<Content>` inherits from, so
-    /// swizzling it covers the root screen and every full-screen cover alike.
     private static func hostingControllerBaseClass(of vc: UIViewController) -> AnyClass? {
         var result: AnyClass? = nil
         var cls: AnyClass? = object_getClass(vc)
@@ -702,7 +633,6 @@ private enum ScreenEdgeGestureDeferrer {
         guard !swizzledClasses.contains(id) else { return }
         swizzledClasses.insert(id)
 
-        // preferredScreenEdgesDeferringSystemGestures → previous value ∪ .bottom
         let preferredSel = #selector(getter: UIViewController.preferredScreenEdgesDeferringSystemGestures)
         if let method = class_getInstanceMethod(cls, preferredSel) {
             let previousIMP = method_getImplementation(method)
@@ -715,10 +645,6 @@ private enum ScreenEdgeGestureDeferrer {
             class_replaceMethod(cls, preferredSel, imp_implementationWithBlock(block), typeEnc)
         }
 
-        // childForScreenEdgesDeferringSystemGestures → nil, so the system reads
-        // each hosting controller's own (now-deferred) preference instead of
-        // forwarding to a child SwiftUI never wired up. This is a distinct path
-        // from the home-indicator-hidden forwarding, which is left untouched.
         let childSel = #selector(getter: UIViewController.childForScreenEdgesDeferringSystemGestures)
         if let method = class_getInstanceMethod(cls, childSel) {
             let typeEnc = method_getTypeEncoding(method)
@@ -727,7 +653,6 @@ private enum ScreenEdgeGestureDeferrer {
         }
     }
 
-    /// Asks the current controller stack to re-query the now-swizzled prefs.
     private static func refresh(from root: UIViewController) {
         var vc: UIViewController? = root
         while let current = vc {
