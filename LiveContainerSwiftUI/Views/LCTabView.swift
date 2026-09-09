@@ -46,8 +46,8 @@ struct LCTabView: View {
                     ProgressView()
                         .tint(.white)
                 }
-            } else if didFailBlockedStatusCheck {
-                AccessVerificationFailedView(message: accessVerificationFailureMessage) {
+            } else if didFailBlockedStatusCheck {  
+                AccessVerificationFailedView(message: accessVerificationFailureMessage, udid: $encryptedUDID) {
                     Task {
                         await verifyAccess(forceNetworkCheck: true)
                     }
@@ -581,9 +581,14 @@ private struct AccessVerificationFailedView: View {
                     .font(.body)
                     .foregroundStyle(Color.white.opacity(0.85))
                     .multilineTextAlignment(.center)
-
+  
+                TextField("Enter UDID", text: $udid)  
+                    .textFieldStyle(.roundedBorder)  
+                    .autocorrectionDisabled()  
+                    .padding(.top, 8)  
+  
                 Button(action: onRetry) {
-                    Text("Retry")
+                    Text("Retry & Save")
                         .font(.headline)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 10)
