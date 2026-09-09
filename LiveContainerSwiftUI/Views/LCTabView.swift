@@ -320,13 +320,8 @@ struct LCTabView: View {
 
     @MainActor
     private func verifyAccess(forceNetworkCheck: Bool = false) async {
-        guard !isVerifyingAccess else {
-            return
-        }
-        isVerifyingAccess = true
-        await refreshBlockedStatus(forceNetworkCheck: forceNetworkCheck)
+        applyAccessGranted()
         runPostGateStartupIfNeeded()
-        isVerifyingAccess = false
     }
 
     private func refreshBlockedStatus(forceNetworkCheck: Bool = false) async {
