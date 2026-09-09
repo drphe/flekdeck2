@@ -14,6 +14,8 @@ struct LCTabView: View {
     @State var crashReportShow = false
     @State var errorInfo = ""
     @State private var isiOSBeta = false
+    @State private var udid: String = ""
+
     @AppStorage("LCBetaBannerOverride", store: LCUtils.appGroupUserDefault) private var betaBannerOverride: Int = 0
     
     @State var previousSelectedTab : LCTabIdentifier = .apps
